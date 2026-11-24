@@ -19,16 +19,28 @@ class BundleTests(unittest.TestCase):
         a=Api('test');a.product_by_external=lambda code:{'productId':7,'bundledIds':[8]}
         product={'productId':8,'productType':'product_bundle','productRetailPrice':12}
         row=a.bundle_row(product,'001',7);calls=[]
+        product['productRetailPrice']='12.00'
+        product['productDescriptionsLangData']=[{'langId':'pol','productName':'Nowa nazwa'}]
         def call(endpoint,method='GET',body=None,params=None):
             if method=='PUT':
                 calls.append(body)
                 product['productRetailPrice']=body['params']['products'][0]['productRetailPrice']
                 return {'results':[{'faultCode':0}]}
-            return {'results':[dict(product)]}
+            return {'results':[{'productId':80},dict(product)]}
         a.call=call
         after=a.update_bundle_price(row,'17,45')
         self.assertEqual(after['price'],17.45)
         self.assertEqual(calls,[{'params':{'products':[{'productId':8,'priceChangeMode':'amount_set','productRetailPrice':17.45}]}}])
+    def test_changed_price_blocks_write(self):
+        a=Api('test')
+        a.product_by_external=lambda code:{'productId':7,'bundledIds':['8']}
+        product={'productId':8,'productType':'product_bundle','productRetailPrice':12}
+        row=a.bundle_row(product,'001',7)
+        product['productRetailPrice']=13
+        a.call=lambda endpoint,params:{'results':[product]}
+        with self.assertRaisesRegex(ApiError,'z 12 na 13'):
+            a.update_bundle_price(row,'17,45')
+
     def test_removed_membership_blocks_write(self):
         a=Api('test');a.product_by_external=lambda code:{'productId':7,'bundledIds':[]}
         a.call=lambda *args,**kw:self.fail('No write allowed')
