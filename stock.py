@@ -105,7 +105,9 @@ class Api:
         for start in range(0,len(ids),100):
             batch=ids[start:start+100]
             result=self.call('products/products',params={'productIds':','.join(map(str,batch))}).get('results',[])
-            if {int(p['productId']) for p in result} != {int(i) for i in batch}:
+            wanted=set(map(str,batch))
+            result=[p for p in result if str(p.get('productId')) in wanted]
+            if {str(p['productId']) for p in result} != wanted:
                 raise ApiError('API nie zwróciło wszystkich zestawów. Odśwież listę.')
             products.extend(result)
         rows=[]
@@ -140,14 +142,29 @@ class Api:
         if not price.is_finite() or price<0 or price!=price.quantize(Decimal('0.01')):
             raise ApiError('Cena musi być nieujemna i mieć najwyżej 2 miejsca po przecinku.')
         source=self.product_by_external(row['source_code'])
-        if source['productId']!=row['source_id'] or row['product_id'] not in source.get('bundledIds',[]):
+        if str(source['productId'])!=str(row['source_id']) or str(row['product_id']) not in map(str,source.get('bundledIds',[])):
             raise ApiError('Zmieniło się przypisanie zestawu. Pobierz listę ponownie.')
-        current=self.call('products/products',params={'productIds':str(row['product_id'])}).get('results',[])
-        if len(current)!=1 or current[0].get('productType')!='product_bundle' or self.bundle_row(current[0],row['source_code'],row['source_id'])!=row:
-            raise ApiError('Dane zestawu zmieniły się. Pobierz listę ponownie.')
+        def read_bundle():
+            bundle_id=str(row['product_id'])
+            products=self.call('products/products',params={'productIds':bundle_id}).get('results',[])
+            matches=[p for p in products if str(p.get('productId'))==bundle_id]
+            if len(matches)!=1 or matches[0].get('productType')!='product_bundle':
+                raise ApiError(f'Nie udało się potwierdzić zestawu o ID {bundle_id}.')
+            return matches[0]
+
+        def retail_price(product):
+            try: amount=Decimal(str(product.get('productRetailPrice')))
+            except InvalidOperation: raise ApiError('Brak prawidłowej ceny zestawu w danych API.')
+            if not amount.is_finite(): raise ApiError('Brak prawidłowej ceny zestawu w danych API.')
+            return amount
+
+        current=retail_price(read_bundle())
+        previous=retail_price({'productRetailPrice':row['price']})
+        if current!=previous:
+            raise ApiError(f'Cena zestawu zmieniła się z {previous} na {current}. Pobierz listę ponownie.')
         self.call('products/products','PUT',{'params':{'products':[{'productId':row['product_id'],
             'priceChangeMode':'amount_set','productRetailPrice':float(price)}]}})
-        result=self.call('products/products',params={'productIds':str(row['product_id'])}).get('results',[])
-        if len(result)!=1 or Decimal(str(result[0].get('productRetailPrice')))!=price:
+        result=read_bundle()
+        if retail_price(result)!=price:
             raise ApiError('Zapis wysłano, ale cena nie została potwierdzona odczytem. Odśwież listę.')
-        return self.bundle_row(result[0],row['source_code'],row['source_id'])
+        return self.bundle_row(result,row['source_code'],row['source_id'])
